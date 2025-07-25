@@ -105,17 +105,63 @@ class MissionManager:
 
     def reroute_and_apply(self, drone_id: str, others: List[DroneMission], space_bounds: tuple, uncertainty: UncertaintyParameters, time_range: tuple = None) -> dict:
         """
-        Reroute the specified drone using the ai_rerouting_agent and update its mission.
-        This method is 3D-compatible and will update the drone's path to a conflict-free one if possible.
+        Reroute the specified drone using the enhanced ai_rerouting_agent and update its mission.
+        This method uses multiple sophisticated strategies to find the best conflict-free route.
         Usage:
             manager.reroute_and_apply(drone_id, others, (800, 600, 50), uncertainty)
         """
-        from models.ai_rerouting_agent import reroute_path
+        from models.ai_rerouting_agent import reroute_path, evaluate_path_conflicts
+        from utils.conflict_checker import check_comprehensive_conflicts
+        
         primary = self.get_mission(drone_id)
         if not primary:
             return {"status": "error", "message": f"Drone {drone_id} not found"}
+        
+        # Check original conflicts
+        original_report = check_comprehensive_conflicts(primary, others, uncertainty)
+        original_conflicts = len(original_report["conflicts"]) + len(original_report["spatial_conflicts"])
+        
+        # Apply enhanced rerouting
         new_waypoints = reroute_path(primary, others, space_bounds, uncertainty, time_range)
-        return self.apply_reroute(drone_id, new_waypoints)
+        
+        if not new_waypoints or len(new_waypoints) == 0:
+            return {
+                "status": "failed", 
+                "message": f"No alternative route found for {drone_id}",
+                "original_conflicts": original_conflicts
+            }
+        
+        # Evaluate the new route
+        conflict_score = evaluate_path_conflicts(new_waypoints, primary, others, uncertainty)
+        
+        # Create temporary mission for detailed conflict analysis
+        temp_mission = DroneMission(
+            drone_id=primary.drone_id + "_temp",
+            waypoints=new_waypoints,
+            start_time=new_waypoints[0].t,
+            end_time=new_waypoints[-1].t,
+            priority=primary.priority
+        )
+        
+        new_report = check_comprehensive_conflicts(temp_mission, others, uncertainty)
+        new_conflicts = len(new_report["conflicts"]) + len(new_report["spatial_conflicts"])
+        
+        # Apply the reroute and return detailed results
+        apply_result = self.apply_reroute(drone_id, new_waypoints)
+        
+        return {
+            "status": "success",
+            "message": f"Enhanced reroute applied to {drone_id}",
+            "original_conflicts": original_conflicts,
+            "new_conflicts": new_conflicts,
+            "conflict_reduction": max(0, original_conflicts - new_conflicts),
+            "conflict_score": conflict_score,
+            "original_status": original_report["status"],
+            "new_status": new_report["status"],
+            "waypoint_count": len(new_waypoints),
+            "route_improvement": "significant" if new_conflicts < original_conflicts else "minimal",
+            "apply_result": apply_result
+        }
 
 # Global mission manager instance
 global_mission_manager = None
